@@ -83,8 +83,17 @@ body{font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;ba
 
 .ai-btn{padding:12px 18px;font-size:14px;font-weight:700;border:none;border-radius:10px;background:linear-gradient(135deg,#16324F,#2C5578);color:#fff;cursor:pointer}
 .ai-btn:disabled{opacity:.5;cursor:wait}
-.ai-out{margin-top:14px;font-size:14px;white-space:pre-wrap;line-height:1.8}
-.ai-out.empty-hint{color:var(--ink-soft);font-size:13px}
+.chat{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.chat-empty{color:var(--ink-soft);font-size:13px;line-height:1.7}
+.msg{max-width:92%;padding:11px 14px;border-radius:12px;font-size:13.5px;line-height:1.75;white-space:pre-wrap}
+.msg.ai{background:#F1F5F8;border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:4px}
+.msg.me{background:var(--ink);color:#fff;align-self:flex-end;border-bottom-right-radius:4px;white-space:normal}
+.msg.typing{color:var(--ink-soft);font-style:italic}
+.msg .cp{display:block;margin-top:8px;font-size:11.5px;color:var(--ok);background:none;border:none;padding:0;cursor:pointer;text-align:left}
+.chat-input{display:flex;gap:8px}
+.chat-input input{flex:1;padding:11px 13px;font-size:14px;border:1.5px solid var(--line);border-radius:10px;background:#FBFCFD}
+.chat-input button{padding:11px 18px;font-size:14px;font-weight:700;border:none;border-radius:10px;background:var(--ink);color:#fff;cursor:pointer}
+.chat-input button:disabled{opacity:.5;cursor:wait}
 .copy-line{margin-top:10px;padding:8px 12px;font-size:12.5px;border:1.5px solid var(--line);border-radius:8px;background:#FBFCFD;cursor:pointer}
 .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px}
 .badge.ok{background:rgba(44,140,130,.12);color:var(--ok)}
@@ -170,7 +179,7 @@ body{font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;ba
    2. 輸入新密碼 → 按「產生雜湊」
    3. 把產生的字串貼到下面這行的引號內，存檔
 */
-const PW_HASH = '3665e6e84146b67faf28d7d20abca61640e56f723e76f60f643c199d3c724bae';
+const PW_HASH = '369b3fd7119217c47c336e004bce655c2f0fd0299c86a086be2ab6788c881312';
 
 async function sha256(str){
   const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -284,10 +293,62 @@ function renderList(){
   }).join('');
 }
 
+function clientKey(r){
+  // 用 姓名+填寫時間 當唯一識別，避免同名客戶混淆
+  return (r['姓名']||'')+'|'+(r['填寫時間']||'')+'|'+(r._row||'');
+}
+
 function select(row){
   SEL=DATA.find(r=>r._row===row);
+  chatHistory=[];   // 先清空，稍後從雲端載入
   renderList();
   renderDetail();
+  loadChatHistory();  // 載入這位客戶過去的 AI 對話
+}
+
+async function loadChatHistory(){
+  if(!SEL) return;
+  try{
+    const url=CFG.gas+(CFG.gas.includes('?')?'&':'?')+'token='+encodeURIComponent(CFG.token)
+      +'&action=chat&client='+encodeURIComponent(clientKey(SEL));
+    const res=await fetch(url);
+    const json=await res.json();
+    if(json.ok && json.messages && json.messages.length){
+      chatHistory=json.messages;
+      renderChatHistory();
+    }
+  }catch(e){ /* 載入失敗就當作沒有歷史，不影響使用 */ }
+}
+
+function renderChatHistory(){
+  const chat=document.getElementById('chat');
+  const empty=document.getElementById('chatEmpty');
+  if(empty) empty.remove();
+  if(!chat) return;
+  chat.innerHTML='';
+  chatHistory.forEach((m,i)=>{
+    if(m.role==='assistant'){
+      addAiMsg(chat, m.content, true);
+    }else{
+      // 第一筆 user 是系統產生的完整建議書指令，不顯示原文，只顯示「（已生成建議書）」
+      if(i===0){
+        const tag=document.createElement('div');
+        tag.className='msg me'; tag.style.opacity='.7'; tag.style.fontSize='12px';
+        tag.textContent='📋 已生成完整建議書';
+        chat.appendChild(tag);
+      }else{
+        const me=document.createElement('div');
+        me.className='msg me'; me.textContent=m.content;
+        chat.appendChild(me);
+      }
+    }
+  });
+  // 有歷史就顯示追問框、按鈕改文字
+  const inputWrap=document.getElementById('chatInputWrap');
+  if(inputWrap) inputWrap.style.display='flex';
+  const btn=document.getElementById('aiBtn');
+  if(btn) btn.textContent='重新生成建議書';
+  chat.scrollTop=chat.scrollHeight;
 }
 
 /* ---------- 規則式分析 ---------- */
@@ -365,59 +426,145 @@ function renderDetail(){
     </div>
 
     <div class="section">
-      <h3>🤖 AI 完整建議書 <span class="badge ${CFG.apiKey?'ok':'warn'}">${CFG.apiKey?'已啟用':'需 API Key'}</span></h3>
-      <button class="ai-btn" id="aiBtn" onclick="genAI()" ${CFG.apiKey?'':'disabled'}>生成這位客戶的專屬建議</button>
-      <div class="ai-out empty-hint" id="aiOut">${CFG.apiKey?'點上方按鈕，AI 會根據這位客戶的完整資料，產出補強優先順序、推薦商品方向、預期反對問題與應對話術。':'未填 Claude API Key，僅顯示規則式分析。可重新整理頁面回登入畫面補上。'}</div>
+      <h3>🤖 AI 顧問督導 <span class="badge ${CFG.apiKey?'ok':'warn'}">${CFG.apiKey?'已啟用':'需 API Key'}</span></h3>
+      <div class="chat" id="chat">
+        <div class="chat-empty" id="chatEmpty">${CFG.apiKey?'按下方按鈕生成這位客戶的完整建議書，之後可以像跟督導討論一樣繼續追問（例如「他說沒預算怎麼回？」「長照那塊幫我多寫一點」）。':'未填 Claude API Key，僅顯示規則式分析。可重新整理頁面回登入畫面補上。'}</div>
+      </div>
+      <button class="ai-btn" id="aiBtn" onclick="genAI()" ${CFG.apiKey?'':'disabled'}>生成這位客戶的完整建議書</button>
+      <div class="chat-input" id="chatInputWrap" style="display:none">
+        <input id="chatInput" placeholder="繼續追問…（按 Enter 送出）" onkeydown="if(event.key==='Enter')askFollow()">
+        <button onclick="askFollow()" id="chatSend">送出</button>
+      </div>
     </div>
   `;
 }
 
 function fmtDate(d){ try{ const x=new Date(d); return `${x.getMonth()+1}/${x.getDate()} ${String(x.getHours()).padStart(2,'0')}:${String(x.getMinutes()).padStart(2,'0')}`; }catch(e){ return d; } }
 
-/* ---------- AI 生成 ---------- */
-async function genAI(){
-  const r=SEL, btn=document.getElementById('aiBtn'), out=document.getElementById('aiOut');
-  btn.disabled=true; btn.textContent='AI 思考中…';
-  out.classList.remove('empty-hint'); out.textContent='';
+/* ---------- AI 對話督導 ---------- */
+let chatHistory=[];   // 與 Claude 的完整對話（含 system 設定的脈絡）
 
-  const profile=buildProfile(r);
-  const prompt=`你是一位資深的台灣保險與財務規劃顧問督導，正在指導一位業務同仁如何服務以下這位剛完成「人生五大需求金字塔」風險試算的客戶。請根據資料，產出給「業務同仁看」的內部作戰建議（不是給客戶看的）。
+const SYSTEM_PROMPT=`你是一位資深的台灣保險與財務規劃顧問督導，正在一對一指導一位業務同仁，協助他服務剛完成「人生五大需求金字塔」風險試算的客戶。你的所有回答都是「給業務同仁看的內部討論」，不是給客戶看的推銷文。
 
-客戶資料：
-${profile}
+原則：
+- 用繁體中文、務實、像資深前輩在帶人的口吻。
+- 金字塔補強順序由下而上：醫療→保障→退休→理財→傳承。
+- 提到商品時只講「類型方向」（如實支實付醫療險、定期壽險、長照險、年金險等），不要編造特定公司商品名稱、保費數字或法規細節，不確定就用通則描述。
+- 業務同仁的風格是「分享生活、溫暖不硬銷」，建議的話術要符合這個調性。
+- 回答精簡聚焦，不要每次都重複客戶全部資料。`;
 
-請用繁體中文、條理分明地輸出三個段落，每段用標題開頭：
+function genAI(){
+  // 首次生成完整建議書
+  const r=SEL;
+  chatHistory=[];  // 切換客戶或重新生成時重置
+  const chat=document.getElementById('chat');
+  if(chat) chat.innerHTML='';  // 清掉畫面上載入的舊對話，重新開始一輪
+  const firstPrompt=`這位客戶的完整資料如下：
+${buildProfile(r)}
 
-【一、補強優先順序】
-依金字塔由下而上的原則（醫療→保障→退休→理財→傳承），結合這位客戶防護力最低的層級，列出前 3 個最該優先處理的缺口，並簡短說明為什麼這個順序對「這位客戶」最合理。
+請產出一份完整建議書，分三段、每段加標題：
+【一、補強優先順序】依金字塔由下而上，結合他防護力最低的層級，列出前 3 個最該優先處理的缺口，並說明為什麼這個順序對「這位客戶」合理。
+【二、推薦商品方向】針對缺口建議可切入的險種類別方向。
+【三、預期反對問題與應對】預測他最可能的 2~3 個猶豫，各給一句同理又專業的回應方向。`;
+  sendToClaude(firstPrompt, '生成這位客戶的完整建議書');
+}
 
-【二、推薦商品方向】
-針對上述缺口，建議可切入的「商品類型方向」（例如實支實付醫療險、定期壽險、長照險、年金險、利變型保單等），用台灣市場常見的險種類別描述即可，不要編造特定公司商品名稱或保費數字。
+function askFollow(){
+  const input=document.getElementById('chatInput');
+  const q=input.value.trim();
+  if(!q) return;
+  input.value='';
+  sendToClaude(q, null, q);  // 第三參數=畫面上顯示的使用者訊息
+}
 
-【三、預期反對問題與應對】
-預測這位客戶最可能提出的 2~3 個反對或猶豫（例如「我覺得我保險夠了」「沒有預算」「再想想」），各給一句同理且專業的回應方向。
+async function sendToClaude(promptText, btnLabel, showUserMsg){
+  const chat=document.getElementById('chat');
+  const empty=document.getElementById('chatEmpty');
+  if(empty) empty.remove();
+  const btn=document.getElementById('aiBtn');
+  const sendBtn=document.getElementById('chatSend');
+  const inputWrap=document.getElementById('chatInputWrap');
 
-注意：語氣務實、給業務看的，不要寫成給客戶的推銷文。不要捏造任何數字或法規，不確定的就用通則描述。`;
+  // 顯示使用者訊息（追問時）
+  if(showUserMsg){
+    const me=document.createElement('div');
+    me.className='msg me'; me.textContent=showUserMsg;
+    chat.appendChild(me);
+  }
+
+  // typing 指示
+  const typing=document.createElement('div');
+  typing.className='msg ai typing'; typing.textContent='督導思考中…';
+  chat.appendChild(typing);
+  chat.scrollTop=chat.scrollHeight;
+
+  if(btn){ btn.disabled=true; }
+  if(sendBtn){ sendBtn.disabled=true; }
+
+  // 累積對話脈絡
+  chatHistory.push({role:'user', content:promptText});
 
   try{
     const res=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-api-key':CFG.apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1500,messages:[{role:'user',content:prompt}]})
+      body:JSON.stringify({
+        model:'claude-sonnet-4-6',
+        max_tokens:1500,
+        system:SYSTEM_PROMPT,
+        messages:chatHistory
+      })
     });
     const data=await res.json();
-    if(data.error){ out.textContent='生成失敗：'+(data.error.message||JSON.stringify(data.error)); btn.disabled=false; btn.textContent='重新生成'; return; }
-    const text=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-    out.textContent=text||'（沒有取得回應）';
-    // 附複製按鈕
-    const cp=document.createElement('button');
-    cp.className='copy-line'; cp.textContent='📋 複製這份建議';
-    cp.onclick=()=>{ navigator.clipboard.writeText(text); cp.textContent='✓ 已複製'; setTimeout(()=>cp.textContent='📋 複製這份建議',2000); };
-    out.after(cp);
+    typing.remove();
+    if(data.error){
+      addAiMsg(chat,'⚠️ 生成失敗：'+(data.error.message||JSON.stringify(data.error)));
+      chatHistory.pop();  // 失敗就把這輪 user 拿掉，不污染脈絡
+    }else{
+      const text=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')||'（沒有取得回應）';
+      chatHistory.push({role:'assistant', content:text});
+      addAiMsg(chat,text,true);
+      // 把這一輪（user + assistant）寫回 Google Sheets
+      saveChatToSheet([
+        {role:'user', content:promptText},
+        {role:'assistant', content:text}
+      ]);
+    }
   }catch(e){
-    out.textContent='連線失敗：'+e.message+'（若是 CORS 問題，請確認使用最新版瀏覽器）';
+    typing.remove();
+    addAiMsg(chat,'⚠️ 連線失敗：'+e.message);
+    chatHistory.pop();
   }
-  btn.disabled=false; btn.textContent='重新生成';
+
+  if(btn){ btn.disabled=false; btn.textContent='重新生成建議書'; }
+  if(sendBtn){ sendBtn.disabled=false; }
+  if(inputWrap){ inputWrap.style.display='flex'; }  // 生成後顯示追問框
+  chat.scrollTop=chat.scrollHeight;
+}
+
+function addAiMsg(chat, text, withCopy){
+  const m=document.createElement('div');
+  m.className='msg ai'; m.textContent=text;
+  if(withCopy){
+    const cp=document.createElement('button');
+    cp.className='cp'; cp.textContent='📋 複製';
+    cp.onclick=()=>{ navigator.clipboard.writeText(text); cp.textContent='✓ 已複製'; setTimeout(()=>cp.textContent='📋 複製',2000); };
+    m.appendChild(cp);
+  }
+  chat.appendChild(m);
+  chat.scrollTop=chat.scrollHeight;
+}
+
+/* 把對話寫回 Google Sheets（no-cors，背景送出） */
+function saveChatToSheet(messages){
+  if(!SEL) return;
+  try{
+    fetch(CFG.gas,{
+      method:'POST', mode:'no-cors',
+      headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify({ action:'chat', token:CFG.token, client:clientKey(SEL), messages:messages })
+    }).catch(()=>{});
+  }catch(e){}
 }
 
 function buildProfile(r){
